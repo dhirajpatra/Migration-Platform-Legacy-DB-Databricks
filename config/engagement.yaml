@@ -3,8 +3,29 @@ engagement:
   name: demo-legacy-estate
   target:
     platform: databricks
-    cloud: azure            # azure | aws
-    host: ${DATABRICKS_HOST:-}
+    cloud: ${TARGET_CLOUD:-azure}          # azure | aws  -> selects the cloud module
+    catalog: ${DATABRICKS_CATALOG:-migration_dev}
+    host: ${DATABRICKS_HOST:-}             # empty/mock => Databricks client runs in MOCK mode
+    warehouse_id: ${DATABRICKS_WAREHOUSE_ID:-}
+    # token comes from DATABRICKS_TOKEN (default dapi-mock-0000 = mock)
+cloud:
+  aws:
+    region: ap-south-1
+    bucket: ${MINIO_BUCKET:-migration-landing}
+    landing_prefix: landing
+    endpoint_url: ${S3_ENDPOINT:-}         # MinIO in local dev; leave S3_ENDPOINT unset on real AWS
+    secrets_backend: env                   # env (dev) | cloud (AWS Secrets Manager)
+    secrets_prefix: migration
+    resource_prefix: mig
+    dms_secrets_access_role_arn: arn:aws:iam::<ACCOUNT_ID>:role/mig-dms-secrets
+    dms_s3_role_arn: arn:aws:iam::<ACCOUNT_ID>:role/mig-dms-s3
+  azure:
+    storage_account: ${AZURE_STORAGE_ACCOUNT:-devstoreaccount1}   # Azurite default in dev
+    container: ${MINIO_BUCKET:-migration-landing}
+    landing_prefix: landing
+    key_vault_url: https://<your-vault>.vault.azure.net/
+    secrets_backend: env                   # env (dev) | cloud (Azure Key Vault)
+    integration_runtime: AutoResolveIntegrationRuntime   # use a self-hosted IR for private/on-prem sources
 graph:
   enabled: true             # load into Neo4j (analysis still works if Neo4j is down)
 sources:

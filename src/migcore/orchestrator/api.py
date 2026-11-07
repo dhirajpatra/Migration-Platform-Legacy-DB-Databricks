@@ -89,6 +89,28 @@ def create_app(cfg: dict | None = None, connector_factory=build_connector, check
             raise HTTPException(404, "assessment not ready")
         return f.read_text()
 
+    @app.get("/target/status")
+    def target_status():
+        """Which cloud module is active and whether Databricks is mock or real."""
+        from migcore.cloud import get_provider
+        from migcore.cloud.databricks import DatabricksClient
+        cfg_ = state["cfg"] or load_config()
+        state["cfg"] = cfg_
+        prov, db = get_provider(cfg_), DatabricksClient.from_env(cfg_)
+        return {"cloud": prov.name, "databricks": db.whoami(), "tooling": prov.tooling, "unity_catalog": prov.uc_requirements()}
+
+    @app.post("/runs/{run_id}/cloud-plan")
+    def cloud_plan(run_id: str, cloud: str | None = None, mode: str = "full_load_and_cdc"):
+        """Generate the cloud-specific load plan + artifacts (DMS for AWS, ADF for Azure) from this run's inventory."""
+        from migcore.cloud.__main__ import generate
+        state["cfg"] = state["cfg"] or load_config()
+        try:
+            return generate(run_id, state["cfg"], cloud, mode)
+        except FileNotFoundError as e:
+            raise HTTPException(409, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
     @app.post("/runs/{run_id}/approve")
     def approve(run_id: str, body: Approval):
         g = graph()

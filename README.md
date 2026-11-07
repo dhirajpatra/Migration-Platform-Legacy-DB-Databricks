@@ -1,4 +1,4 @@
-# Migration Platform — Legacy DB → Databricks (Milestone 0)
+# Migration Platform — Legacy DB → Databricks (Milestone 0 + Cloud Modules)
 
 Multi-agent lift-and-shift platform. Specs: `SKILL.md` (domain playbook) and `AGENT.md` (agent contracts).
 **Milestone 0 delivers phases 0–3 of the pipeline plus Human Gate 1**, running end-to-end in Docker Compose:
@@ -33,14 +33,43 @@ Try in Neo4j: `MATCH (p:Procedure)-[r:WRITES|CALLS|READS]->(x) RETURN p,r,x`
 Point at **your own** databases: edit `config/engagement.yaml` (`sources:`), keep secrets in `.env`/secret store, skip `--profile demo`.
 Create read-only logins like the demo seeds do (`seed/`): SQL Server `VIEW DEFINITION` only; Oracle `CREATE SESSION` + `SELECT_CATALOG_ROLE`.
 
+## Cloud modules (AWS and Azure) + mock Databricks token
+Same process on both clouds, different tools. Select with `TARGET_CLOUD=aws|azure` (or `?cloud=` per request).
+
+| Step | AWS module (`cloud/aws.py`) | Azure module (`cloud/azure.py`) |
+|---|---|---|
+| Secrets | AWS Secrets Manager | Azure Key Vault |
+| Landing zone | S3 `s3://` (MinIO in local dev) | ADLS Gen2 `abfss://` (Azurite in local dev, profile `azure`) |
+| Bulk + CDC extraction | **AWS DMS** `full-load-and-cdc` → S3 Parquet | **Azure Data Factory** Copy (self-hosted IR for private sources); CDC via ADF CDC / Debezium (Oracle: GoldenGate/Debezium) |
+| Databricks ingest | `COPY INTO` / Auto Loader from `s3://` | `COPY INTO` / Auto Loader from `abfss://` |
+| UC access to landing | IAM role → storage credential | Access Connector managed identity → storage credential |
+| IaC | `deploy/terraform/aws` | `deploy/terraform/azure` |
+
+What each module generates from a run's discovery inventory (`POST /runs/{id}/cloud-plan?cloud=aws|azure`, or
+`python -m migcore.cloud --run <id> --cloud azure`), under `runs/<id>/cloud/<cloud>/`:
+`load_plan.json` (per-table landing URI, bronze table, numeric-PK range partitioning, notes), `bronze_ingest.sql` (UC schemas + `COPY INTO`,
+identical on both clouds), and DMS endpoint/task JSON **or** ADF linked services/datasets/pipelines. Credentials are referenced
+(Secrets Manager id / Key Vault secret name), never embedded. The landing path DMS/ADF write to is asserted equal to the path Databricks reads (tests).
+
+**Mock token:** `DATABRICKS_TOKEN=dapi-mock-0000` (default). With a mock token — or no host — `DatabricksClient` makes **no network calls**:
+statements are recorded, `explain()` proves syntax only (`compiled: null` = not proven). Set a real `DATABRICKS_HOST`, `DATABRICKS_TOKEN` and
+`DATABRICKS_WAREHOUSE_ID` and it flips to the SQL Statement Execution API automatically. `GET /target/status` shows the active cloud and mode.
+
+Secrets in dev: `secrets_backend: env` reads `SECRET_<NAME>` variables; set `secrets_backend: cloud` for Secrets Manager / Key Vault.
+Local landing stores: AWS dev uses MinIO (always on); for Azure start Azurite with `docker compose --profile azure up -d`.
+
+**Not validated:** the Terraform modules are starters — I have no Terraform binary here, so run `terraform init && terraform validate` first.
+The DMS/ADF JSON follows the services' documented shapes but has not been imported into real DMS/ADF; expect small field fixes on first deploy.
+Actually moving data (running DMS/ADF, CDC enablement) is Milestone 3 and sits behind Gate 3.
+
 ## Tests (no Docker needed)
-`make test` — 11 tests run the whole graph against a seed-backed fake connector: AST extraction (T-SQL + PL/SQL), wave ordering,
-hard-flag routing, Gate 1 pause/approve/reject, blocking on write-capable logins and unreachable sources, and the HTTP API lifecycle.
+`make test` — 23 tests run the whole graph against a seed-backed fake connector: AST extraction (T-SQL + PL/SQL), wave ordering,
+hard-flag routing, Gate 1 pause/approve/reject, blocking on write-capable logins and unreachable sources, the HTTP API lifecycle, and both cloud modules (plans, DMS/ADF artifacts, storage ops via fakes, mock Databricks client).
 
 ## Layout
 ```
-docker-compose.yml  .env.example  Makefile  config/engagement.yaml
-src/migcore/{connectors,ast,graph,agents,orchestrator}   mcp_servers/server.py
+docker-compose.yml  .env.example  Makefile  config/engagement.yaml  deploy/terraform/{aws,azure}
+src/migcore/{connectors,ast,graph,agents,orchestrator,cloud}   mcp_servers/server.py
 seed/{sqlserver,oracle}   tests/   runs/<run_id>/{source,inventory,ir,graph_payload.json,assessment.*,audit.jsonl}
 ```
 

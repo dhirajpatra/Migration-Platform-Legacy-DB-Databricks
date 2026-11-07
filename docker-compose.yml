@@ -3,6 +3,7 @@ name: migration-platform
 # Profiles
 #   (default)  postgres, neo4j, minio, orchestrator      -> the platform itself
 #   demo       sqlserver (+seed), oracle (+seed)         -> sample legacy sources for local dev
+#   azure      azurite (Azure Storage emulator)      -> local stand-in for ADLS (AWS dev uses MinIO, always on)
 #   mcp        mcp-sqlserver, mcp-oracle                 -> read-only MCP connector servers
 # Typical:  docker compose --profile demo up -d --build
 
@@ -25,8 +26,15 @@ x-py-env: &py-env
   ORACLE_SERVICE: FREEPDB1
   ORACLE_USER: ${ORACLE_READER_USER}
   ORACLE_PASSWORD: ${ORACLE_READER_PASSWORD}
+  TARGET_CLOUD: ${TARGET_CLOUD:-azure}
   DATABRICKS_HOST: ${DATABRICKS_HOST:-}
-  DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+  DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-dapi-mock-0000}
+  DATABRICKS_WAREHOUSE_ID: ${DATABRICKS_WAREHOUSE_ID:-}
+  DATABRICKS_CATALOG: ${DATABRICKS_CATALOG:-migration_dev}
+  AZURE_STORAGE_ACCOUNT: ${AZURE_STORAGE_ACCOUNT:-devstoreaccount1}
+  AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+  SECRET_MSSQL_DEMO_PASSWORD: ${SECRET_MSSQL_DEMO_PASSWORD:-}
+  SECRET_ORACLE_DEMO_PASSWORD: ${SECRET_ORACLE_DEMO_PASSWORD:-}
   RUNS_DIR: /data/runs
   ENGAGEMENT_CONFIG: /app/config/engagement.yaml
 
@@ -97,6 +105,13 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       neo4j: { condition: service_healthy }
+
+  azurite:
+    profiles: [azure]
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --skipApiVersionCheck
+    ports: ["10000:10000"]
+    volumes: [azuritedata:/data]
 
   # ------------------------------------------------------------------ demo sources
   sqlserver:
@@ -180,3 +195,4 @@ volumes:
   miniodata:
   mssqldata:
   oracledata:
+  azuritedata:
