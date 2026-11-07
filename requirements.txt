@@ -1,0 +1,15 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pyyaml>=6.0
+sqlglot>=25
+networkx>=3.2
+neo4j>=5.20
+langgraph>=0.2.60
+langgraph-checkpoint-postgres>=2.0
+psycopg[binary,pool]>=3.2
+pymssql>=2.3
+oracledb>=2.4
+mcp>=1.8,<2
+httpx>=0.27
+pytest>=8.0

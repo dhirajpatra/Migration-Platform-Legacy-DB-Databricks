@@ -1,0 +1,25 @@
+# Engagement config. ${VAR} / ${VAR:-default} are expanded from the environment (secrets never live here).
+engagement:
+  name: demo-legacy-estate
+  target:
+    platform: databricks
+    cloud: azure            # azure | aws
+    host: ${DATABRICKS_HOST:-}
+graph:
+  enabled: true             # load into Neo4j (analysis still works if Neo4j is down)
+sources:
+  - id: mssql_demo
+    engine: sqlserver
+    host: ${MSSQL_HOST:-sqlserver}
+    port: ${MSSQL_PORT:-1433}
+    database: ${MSSQL_DATABASE:-LegacyDemo}
+    user: ${MSSQL_USER:-mig_reader}
+    password: ${MSSQL_PASSWORD}
+  - id: oracle_demo
+    engine: oracle
+    host: ${ORACLE_HOST:-oracle}
+    port: ${ORACLE_PORT:-1521}
+    service: ${ORACLE_SERVICE:-FREEPDB1}
+    user: ${ORACLE_USER:-MIG_READER}
+    password: ${ORACLE_PASSWORD}
+    schemas: [DEMO]

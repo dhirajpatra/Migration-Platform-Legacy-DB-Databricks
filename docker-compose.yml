@@ -1,0 +1,182 @@
+name: migration-platform
+
+# Profiles
+#   (default)  postgres, neo4j, minio, orchestrator      -> the platform itself
+#   demo       sqlserver (+seed), oracle (+seed)         -> sample legacy sources for local dev
+#   mcp        mcp-sqlserver, mcp-oracle                 -> read-only MCP connector servers
+# Typical:  docker compose --profile demo up -d --build
+
+x-py-env: &py-env
+  POSTGRES_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+  S3_ENDPOINT: http://minio:9000
+  S3_BUCKET: ${MINIO_BUCKET}
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+  MSSQL_HOST: sqlserver
+  MSSQL_PORT: "1433"
+  MSSQL_DATABASE: ${MSSQL_DATABASE}
+  MSSQL_USER: ${MSSQL_READER_USER}
+  MSSQL_PASSWORD: ${MSSQL_READER_PASSWORD}
+  ORACLE_HOST: oracle
+  ORACLE_PORT: "1521"
+  ORACLE_SERVICE: FREEPDB1
+  ORACLE_USER: ${ORACLE_READER_USER}
+  ORACLE_PASSWORD: ${ORACLE_READER_PASSWORD}
+  DATABRICKS_HOST: ${DATABRICKS_HOST:-}
+  DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+  RUNS_DIR: /data/runs
+  ENGAGEMENT_CONFIG: /app/config/engagement.yaml
+
+services:
+  # ------------------------------------------------------------------ platform
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  neo4j:
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_server_memory_heap_max__size: 1G
+    volumes:
+      - neo4jdata:/data
+    ports: ["7474:7474", "7687:7687"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes: [miniodata:/data]
+    ports: ["9000:9000", "9001:9001"]
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || curl -sf http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+                  mc mb -p local/${MINIO_BUCKET}"
+    restart: "no"
+
+  orchestrator:
+    build: { context: ., dockerfile: docker/Dockerfile.python }
+    command: uvicorn migcore.orchestrator.api:app --host 0.0.0.0 --port 8000
+    environment: *py-env
+    volumes:
+      - ./config:/app/config:ro
+      - ./runs:/data/runs
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+
+  # ------------------------------------------------------------------ demo sources
+  sqlserver:
+    profiles: [demo]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+    ports: ["1433:1433"]
+    volumes: [mssqldata:/var/opt/mssql]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  sqlserver-init:
+    profiles: [demo]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    depends_on:
+      sqlserver: { condition: service_healthy }
+    environment:
+      MSSQL_DATABASE: ${MSSQL_DATABASE}
+      MSSQL_READER_USER: ${MSSQL_READER_USER}
+      MSSQL_READER_PASSWORD: ${MSSQL_READER_PASSWORD}
+      SQLCMDPASSWORD: ${MSSQL_SA_PASSWORD}
+    volumes: ["./seed/sqlserver:/seed:ro"]
+    entrypoint:
+      - /opt/mssql-tools18/bin/sqlcmd
+      - -C
+      - -b
+      - -S
+      - sqlserver
+      - -U
+      - sa
+      - -v
+      - DB=${MSSQL_DATABASE}
+      - RUSER=${MSSQL_READER_USER}
+      - RPASS=${MSSQL_READER_PASSWORD}
+      - -i
+      - /seed/init.sql
+    restart: "no"
+
+  oracle:
+    profiles: [demo]
+    image: gvenzl/oracle-free:23-slim
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_SYS_PASSWORD}
+    ports: ["1521:1521"]
+    volumes:
+      - oracledata:/opt/oracle/oradata
+      - ./seed/oracle:/container-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
+  # ------------------------------------------------------------------ MCP connectors (read-only)
+  mcp-sqlserver:
+    profiles: [mcp]
+    build: { context: ., dockerfile: docker/Dockerfile.python }
+    command: python -m mcp_servers.server
+    environment: { <<: *py-env, ENGINE: sqlserver, MCP_PORT: "8101" }
+    ports: ["8101:8101"]
+
+  mcp-oracle:
+    profiles: [mcp]
+    build: { context: ., dockerfile: docker/Dockerfile.python }
+    command: python -m mcp_servers.server
+    environment: { <<: *py-env, ENGINE: oracle, MCP_PORT: "8102" }
+    ports: ["8102:8102"]
+
+volumes:
+  pgdata:
+  neo4jdata:
+  miniodata:
+  mssqldata:
+  oracledata:
