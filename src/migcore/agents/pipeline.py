@@ -9,6 +9,10 @@ from migcore.ast.parser import build_ir
 from migcore.graph.payload import build_payload
 from migcore.agents.analyzer import analyze, render_markdown
 from migcore.models import SourceObject
+from migcore.agents.target_design import build_design
+from migcore.agents.schema_translate import translate_tables
+from migcore.agents.view_translate import translate_views
+from migcore.agents.verify import verify
 
 
 def audit(run_dir: Path, actor: str, action: str, detail: dict | None = None) -> None:
@@ -138,3 +142,82 @@ def analyze_node(state: dict, cfg: dict) -> dict:
     audit(run_dir, "analyzer", "assessed", {"histogram": a["complexity_histogram"], "waves": len(a["waves"])})
     return {"assessment": {"counts": a["counts"], "histogram": a["complexity_histogram"], "waves": len(a["waves"]),
                            "needs_human": len(a["needs_human"]), "cycles": len(a["cycles"])}}
+
+
+def _load_inventories(run_dir: Path, cfg: dict) -> list[dict]:
+    return [json.loads((run_dir / "inventory" / f"{src['id']}.json").read_text()) for src in cfg["sources"]]
+
+
+def target_design_node(state: dict, cfg: dict) -> dict:
+    run_dir = Path(state["run_dir"])
+    design = build_design(cfg, _load_inventories(run_dir, cfg))
+    _w(run_dir / "target" / "design.json", design)
+    audit(run_dir, "target_designer", "proposed", {"tables": len(design["tables"]), "views": len(design["views"])})
+    return {"design": {"catalog": design["catalog"], "tables": len(design["tables"]), "views": len(design["views"]),
+                       "callables": len(design["callables"])}}
+
+
+def translate_node(state: dict, cfg: dict) -> dict:
+    run_dir = Path(state["run_dir"])
+    tdir = run_dir / "target"
+    design = json.loads((tdir / "design.json").read_text())
+    invs = _load_inventories(run_dir, cfg)
+    entries, files, cons = translate_tables(design, invs)
+    for inv in invs:
+        sid = inv["source_id"]
+        objs = [SourceObject(**d) for d in json.loads((run_dir / "inventory" / f"{sid}.code.json").read_text())]
+        irs = json.loads((run_dir / "ir" / f"{sid}.all.json").read_text())
+        cat = Catalog.from_inventory(sid, inv["tables"], objs)
+        views = [{**o.model_dump(), "fqn": o.fqn, "source_hash": o.source_hash} for o in objs if o.kind == "VIEW"]
+        e, f = translate_views(design, sid, inv["engine"], views, irs, cat)
+        entries += e
+        files.update(f)
+    schemas = sorted({t["target"].rsplit(".", 1)[0] for t in list(design["tables"].values()) + list(design["views"].values())})
+    _w(tdir / "ddl" / "schemas.sql", "".join(f"CREATE SCHEMA IF NOT EXISTS {s};\n" for s in schemas))
+    _w(tdir / "ddl" / "constraints.sql", cons)
+    for rel, sql in files.items():
+        _w(tdir / rel, sql)
+    _w(tdir / "translation_entries.json", entries)
+    by: dict[str, int] = {}
+    for x in entries:
+        by[x["status"]] = by.get(x["status"], 0) + 1
+    audit(run_dir, "translators", "translated", by)
+    return {"translation": by}
+
+
+def render_translation_md(entries: list[dict], verification: dict, run_id: str) -> str:
+    by: dict[tuple, int] = {}
+    for e in entries:
+        by[(e["kind"], e["status"])] = by.get((e["kind"], e["status"]), 0) + 1
+    L = [f"# Translation Report — run `{run_id}`", "", f"Verifier mode: **{verification['mode']}**"
+         + (" (syntax only — compilation NOT proven; set a real Databricks token to compile in a sandbox catalog)" if verification["mode"] == "mock" else ""),
+         "", "## Status by object kind"] + [f"- {k} / {st}: {n}" for (k, st), n in sorted(by.items())]
+    attn = [e for e in entries if e["status"] in ("needs_review", "manual_required", "failed")]
+    L += ["", "## Needs attention"]
+    for e in attn:
+        L.append(f"- **{e['status']}** `{e['object_id']}` ({e['kind']})")
+        for f in e["flags"]:
+            if f["severity"] in ("medium", "high"):
+                L.append(f"  - [{f['severity']}] {f['code']}: {f['detail']}" + (f" (column `{f['column']}`)" if f.get("column") else ""))
+        if e.get("blocked_on"):
+            L.append(f"  - blocked on: {', '.join(e['blocked_on'])}")
+    if not attn:
+        L.append("- none")
+    notes = sorted({n for e in entries for n in e["behaviour_changes"]})
+    L += ["", "## Behaviour changes to review with owners"] + ([f"- {n}" for n in notes] or ["- none"])
+    return "\n".join(L) + "\n"
+
+
+def verify_node(state: dict, cfg: dict, db) -> dict:
+    run_dir = Path(state["run_dir"])
+    tdir = run_dir / "target"
+    design = json.loads((tdir / "design.json").read_text())
+    entries = json.loads((tdir / "translation_entries.json").read_text())
+    v = verify(db, design, entries, tdir)
+    _w(tdir / "translation_report.json", {"verification": v, "entries": entries})
+    _w(tdir / "translation_report.md", render_translation_md(entries, v, state["run_id"]))
+    by: dict[str, int] = {}
+    for x in entries:
+        by[x["status"]] = by.get(x["status"], 0) + 1
+    audit(run_dir, "verifier", "verified", {**v, "by_status": by})
+    return {"verification": {**v, "by_status": by}, "status": "m1_done"}

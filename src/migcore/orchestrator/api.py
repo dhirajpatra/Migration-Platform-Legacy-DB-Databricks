@@ -77,16 +77,30 @@ def create_app(cfg: dict | None = None, connector_factory=build_connector, check
         if not snap.values and run_id not in state["errors"]:
             raise HTTPException(404, "unknown run (or still starting)")
         v = dict(snap.values or {})
-        waiting = "gate1" in (snap.next or ())
-        return {"run_id": run_id, "status": "awaiting_g1" if waiting else v.get("status"), "next": list(snap.next or ()),
+        nxt = list(snap.next or ())
+        gate = next((g for g in ("gate1", "gate2") if g in nxt), None)
+        return {"run_id": run_id, "status": f"awaiting_g{gate[-1]}" if gate else v.get("status"), "next": nxt,
                 "error": state["errors"].get(run_id), "discovery": v.get("discovery"), "ast": v.get("ast"),
-                "graph": v.get("graph"), "assessment": v.get("assessment"), "issues": v.get("issues", [])}
+                "graph": v.get("graph"), "assessment": v.get("assessment"), "design": v.get("design"),
+                "translation": v.get("translation"), "verification": v.get("verification"), "issues": v.get("issues", [])}
 
     @app.get("/runs/{run_id}/assessment", response_class=PlainTextResponse)
     def assessment(run_id: str):
         f = runs_dir() / run_id / "assessment.md"
         if not f.exists():
             raise HTTPException(404, "assessment not ready")
+        return f.read_text()
+
+    @app.get("/runs/{run_id}/report/{name}", response_class=PlainTextResponse)
+    def report(run_id: str, name: str):
+        """Allow-listed run artifacts: assessment.md, design.json, translation_report.md"""
+        allowed = {"assessment.md": "assessment.md", "design.json": "target/design.json",
+                   "translation_report.md": "target/translation_report.md"}
+        if name not in allowed:
+            raise HTTPException(404, f"unknown report; choose one of {sorted(allowed)}")
+        f = runs_dir() / run_id / allowed[name]
+        if not f.exists():
+            raise HTTPException(404, "not ready yet")
         return f.read_text()
 
     @app.get("/target/status")
@@ -115,8 +129,8 @@ def create_app(cfg: dict | None = None, connector_factory=build_connector, check
     def approve(run_id: str, body: Approval):
         g = graph()
         snap = g.get_state({"configurable": {"thread_id": run_id}})
-        if "gate1" not in (snap.next or ()):
-            raise HTTPException(409, "run is not waiting at Gate 1")
+        if not any(g in (snap.next or ()) for g in ("gate1", "gate2")):
+            raise HTTPException(409, "run is not waiting at a gate")
         _bg(run_id, lambda: g.invoke(Command(resume=body.model_dump()), {"configurable": {"thread_id": run_id}}))
         return {"accepted": True}
 

@@ -69,14 +69,25 @@ class SqlServerConnector(SourceConnector):
         return list(tables.values())
 
     def list_foreign_keys(self) -> list[dict]:
-        return [{"name": r["name"], "schema": r["ps"], "table": r["pt"],
-                 "ref_schema": r["rs"], "ref_table": r["rt"]} for r in self._q("""
-            SELECT fk.name, ps.name AS ps, pt.name AS pt, rs.name AS rs, rt.name AS rt
+        fks: dict[tuple, dict] = {}
+        for r in self._q("""
+            SELECT fk.name, ps.name AS ps, pt.name AS pt, rs.name AS rs, rt.name AS rt,
+                   pc.name AS pcol, rc.name AS rcol, fkc.constraint_column_id AS ord
             FROM sys.foreign_keys fk
+            JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+            JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+            JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
             JOIN sys.tables pt ON pt.object_id = fk.parent_object_id
             JOIN sys.schemas ps ON ps.schema_id = pt.schema_id
             JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id
-            JOIN sys.schemas rs ON rs.schema_id = rt.schema_id""")]
+            JOIN sys.schemas rs ON rs.schema_id = rt.schema_id
+            ORDER BY fk.name, fkc.constraint_column_id"""):
+            k = (r["ps"], r["pt"], r["name"])
+            e = fks.setdefault(k, {"name": r["name"], "schema": r["ps"], "table": r["pt"], "ref_schema": r["rs"],
+                                   "ref_table": r["rt"], "columns": [], "ref_columns": []})
+            e["columns"].append(r["pcol"])
+            e["ref_columns"].append(r["rcol"])
+        return list(fks.values())
 
     def list_code_objects(self) -> list[SourceObject]:
         out: list[SourceObject] = []

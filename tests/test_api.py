@@ -19,8 +19,17 @@ def test_api_run_lifecycle(tmp_path, monkeypatch):
     assert c.post(f"/runs/{rid}/approve", json={"approved": True, "approver": "me"}).status_code == 200
     for _ in range(100):
         body = c.get(f"/runs/{rid}").json()
-        if body["status"] == "g1_approved":
+        if body["status"] == "awaiting_g2":
             break
         time.sleep(0.1)
-    assert body["status"] == "g1_approved"
+    assert body["status"] == "awaiting_g2"                               # Gate 1 passed -> target design awaits approval
+    assert c.post(f"/runs/{rid}/approve", json={"approved": True, "approver": "me"}).status_code == 200
+    for _ in range(100):
+        body = c.get(f"/runs/{rid}").json()
+        if body["status"] == "m1_done":
+            break
+        time.sleep(0.1)
+    assert body["status"] == "m1_done" and body["verification"]["mode"] == "mock"
+    assert "Translation Report" in c.get(f"/runs/{rid}/report/translation_report.md").text
+    assert c.get(f"/runs/{rid}/report/passwd").status_code == 404
     assert c.post(f"/runs/{rid}/approve", json={"approved": True, "approver": "me"}).status_code == 409

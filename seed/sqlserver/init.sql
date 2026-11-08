@@ -56,6 +56,13 @@ FROM dbo.Customers c
 JOIN dbo.Orders o WITH (NOLOCK) ON o.CustomerId = c.CustomerId;
 GO
 
+CREATE VIEW dbo.vw_OpenOrders AS
+SELECT o.OrderId, c.Name, o.Status
+FROM dbo.Orders o
+JOIN dbo.Customers c ON c.CustomerId = o.CustomerId
+WHERE o.Status = 'NEW';
+GO
+
 CREATE PROCEDURE dbo.usp_AddOrder @CustomerId INT, @Sku VARCHAR(40), @Qty INT, @Price DECIMAL(12,2) AS
 BEGIN
   SET NOCOUNT ON;

@@ -54,6 +54,13 @@ FROM demo.customers c, demo.orders o
 WHERE o.customer_id = c.customer_id(+)
 /
 
+CREATE OR REPLACE VIEW demo.vw_open_orders AS
+SELECT o.order_id, c.name, o.status
+FROM demo.orders o
+JOIN demo.customers c ON c.customer_id = o.customer_id
+WHERE o.status = 'NEW'
+/
+
 CREATE OR REPLACE PACKAGE demo.pkg_billing AS
   PROCEDURE close_month(p_period DATE);
   PROCEDURE add_order(p_customer NUMBER, p_sku VARCHAR2, p_qty NUMBER, p_price NUMBER);

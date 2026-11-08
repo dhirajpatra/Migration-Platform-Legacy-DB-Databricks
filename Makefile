@@ -1,4 +1,4 @@
-.PHONY: setup up down logs test run status approve report clean
+.PHONY: setup up down logs test run status approve report design translation clean
 setup:
 	@test -f .env || (cp .env.example .env && echo "Created .env (dev-only credentials)")
 up: setup
@@ -16,6 +16,10 @@ status:
 	@curl -s localhost:8000/runs/$(RUN) | python -m json.tool
 report:
 	@curl -s localhost:8000/runs/$(RUN)/assessment
+design:
+	@curl -s localhost:8000/runs/$(RUN)/report/design.json
+translation:
+	@curl -s localhost:8000/runs/$(RUN)/report/translation_report.md
 approve:
 	@curl -s -X POST localhost:8000/runs/$(RUN)/approve -H 'content-type: application/json' \
 	  -d '{"approved": true, "approver": "$(USER)", "comment": "scope ok"}'

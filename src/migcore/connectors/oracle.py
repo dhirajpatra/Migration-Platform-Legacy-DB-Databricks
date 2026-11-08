@@ -65,12 +65,23 @@ class OracleConnector(SourceConnector):
         return list(tables.values())
 
     def list_foreign_keys(self) -> list[dict]:
-        return [{"name": r["constraint_name"], "schema": r["owner"], "table": r["table_name"],
-                 "ref_schema": r["r_owner"], "ref_table": r["ref_table"]} for r in self._q(f"""
-            SELECT f.constraint_name, f.owner, f.table_name, p.owner AS r_owner, p.table_name AS ref_table
-            FROM dba_constraints f JOIN dba_constraints p
-              ON p.owner = f.r_owner AND p.constraint_name = f.r_constraint_name
-            WHERE f.constraint_type = 'R' AND {self._owner_clause('f.owner')}""")]
+        fks: dict[tuple, dict] = {}
+        for r in self._q(f"""
+            SELECT f.constraint_name, f.owner, f.table_name, p.owner AS r_owner, p.table_name AS ref_table,
+                   fc.column_name AS col, pc.column_name AS rcol, fc.position
+            FROM dba_constraints f
+            JOIN dba_constraints p ON p.owner = f.r_owner AND p.constraint_name = f.r_constraint_name
+            JOIN dba_cons_columns fc ON fc.owner = f.owner AND fc.constraint_name = f.constraint_name
+            JOIN dba_cons_columns pc ON pc.owner = p.owner AND pc.constraint_name = p.constraint_name
+                                    AND pc.position = fc.position
+            WHERE f.constraint_type = 'R' AND {self._owner_clause('f.owner')}
+            ORDER BY f.owner, f.constraint_name, fc.position"""):
+            k = (r["owner"], r["table_name"], r["constraint_name"])
+            e = fks.setdefault(k, {"name": r["constraint_name"], "schema": r["owner"], "table": r["table_name"],
+                                   "ref_schema": r["r_owner"], "ref_table": r["ref_table"], "columns": [], "ref_columns": []})
+            e["columns"].append(r["col"])
+            e["ref_columns"].append(r["rcol"])
+        return list(fks.values())
 
     def list_code_objects(self) -> list[SourceObject]:
         out: list[SourceObject] = []

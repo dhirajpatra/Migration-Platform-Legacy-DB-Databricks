@@ -27,7 +27,7 @@ def test_full_run_pauses_at_gate1_then_approves(tmp_path):
     assert g.get_state(conf).next == ("gate1",)                      # paused for a human
     assert (tmp_path / "assessment.md").exists() and (tmp_path / "graph_payload.json").exists()
     a = json.loads((tmp_path / "assessment.json").read_text())
-    assert a["counts"]["Table"] == 10 and a["counts"]["Package"] == 1
+    assert a["counts"]["Table"] == 10 and a["counts"]["Package"] == 1 and a["counts"]["View"] == 4
     # dependency order: tables and leaf functions come before the procedures that use them
     wave = {o: w["wave"] for w in a["waves"] for o in w["objects"]}
     assert wave["mssql_demo.dbo.fn_ordertotal"] < wave["mssql_demo.dbo.vw_customerorders"] < 99
@@ -36,10 +36,10 @@ def test_full_run_pauses_at_gate1_then_approves(tmp_path):
     assert "mssql_demo.dbo.usp_closemonth" in a["needs_human"]
     assert a["scores"]["mssql_demo.dbo.usp_addauditnote"]["bucket"] == "Simple"
 
-    final = g.invoke(Command(resume={"approved": True, "approver": "dhiraj"}), conf)
-    assert final["status"] == "g1_approved"
+    g.invoke(Command(resume={"approved": True, "approver": "dhiraj"}), conf)
+    assert g.get_state(conf).next == ("gate2",)                      # next human gate: target design
     audit = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()]
-    assert audit[-1]["action"] == "gate1_approved" and audit[-1]["actor"] == "dhiraj"
+    assert any(x["action"] == "gate1_approved" and x["actor"] == "dhiraj" for x in audit)
 
 
 def test_gate1_rejection(tmp_path):

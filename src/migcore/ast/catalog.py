@@ -42,3 +42,13 @@ class Catalog:
         if same:
             return same[0][0], "ok"
         return (cands[0][0], "ok") if len(cands) == 1 else (None, "ambiguous")
+
+    def resolve_callable(self, schema: str | None, name: str, from_schema: str) -> str | None:
+        cands = self.callables.get(name.lower(), [])
+        if not cands:
+            return None
+        if schema:
+            m = [c for c in cands if c[1] == schema.lower()]
+            return m[0][0] if m else None
+        same = [c for c in cands if c[1] == from_schema.lower()]
+        return same[0][0] if same else (cands[0][0] if len(cands) == 1 else None)
