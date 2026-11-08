@@ -7,7 +7,7 @@ Multi-agent, lift-and-shift platform that discovers a legacy database estate (SQ
 > **Philosophy:** *deterministic first, LLM second, human at the gates.* Source access is read-only, always.
 
 **Contents:** [Specs](#1-specs-skillmd-and-agentmd) · [Milestone 0](#2-milestone-0--discovery-to-gate-1) · [Milestone 1](#2b-milestone-1--target-design-schema--view-translation-verify) · [Cloud modules](#3-cloud-modules-aws-and-azure--mock-databricks-token) ·
-[Run it](#4-quick-start) · [Tests](#5-tests) · [Layout](#6-layout) · [Status & limits](#7-honest-status-and-known-limits) · [Roadmap](#8-roadmap-and-open-decisions) · [Decision log](#9-decision-log)
+[Run it](#4-quick-start) · [Tests](#5-tests) · [Layout](#6-layout) · [Status & limits](#7-honest-status-and-known-limits) · [Cost & scalability review](#7b-architecture-review--cost-and-scalability) · [Roadmap](#8-roadmap-and-open-decisions) · [Decision log](#9-decision-log)
 
 ---
 
@@ -168,6 +168,32 @@ runs/<run_id>/{source,inventory,ir,graph_payload.json,assessment.*,audit.jsonl,c
 - Only **tables, constraints and views** are translated so far. Functions, procedures, packages, triggers and jobs are M2; views that call functions stay `needs_review` until then.
 - The `(+)` outer-join rewrite is intentionally manual; a verified rule (with a behavioural test) is a good M2 addition.
 - Databricks reserved-word quoting uses a conservative built-in list; confirm against your runtime's ANSI mode on first real run.
+
+---
+
+## 7b. Architecture review — cost and scalability
+*Reasoned assessment, not measured: nothing here has been load-tested or priced against your workload.*
+
+**Verdict:** a sound, cost-conscious starting structure for development and small/medium estates — not "the most" scalable or cheapest option, and not production-ready as is.
+
+**What is right-sized**
+- **Postgres + pgvector** does three jobs (LangGraph checkpoints, audit, vector KB), so there is no separate vector database to pay for or run. A migration KB is thousands to low hundreds of thousands of chunks, well inside pgvector's range.
+- **Deterministic-first** keeps LLM spend low: parsing, scoring, type maps and most view rewrites cost nothing per call. Idempotency keys `(run, object, step, source_hash)` mean unchanged objects are never re-processed.
+- **Backend scale needs are modest.** An estate is thousands to tens of thousands of objects. The heavy volume (TBs of data) flows through DMS/ADF/Databricks, not through this backend.
+
+**What would not hold up in production (fix before go-live)**
+1. **Run artifacts live on local disk (`runs/`).** Breaks with multiple workers and is lost on container restart. Move to object storage (S3/ADLS) plus Postgres (or Delta tables) for inventory, IR, results and audit.
+2. **The orchestrator runs graph executions in threads inside the API process.** No horizontal scaling and no queue. Split into API + workers with a queue (SQS / Service Bus / Celery / Temporal) before M2, when per-object LLM calls need fan-out and rate limiting.
+3. **Neo4j is optional, not load-bearing.** Analysis uses networkx on the same edge data; Neo4j adds Graph RAG retrieval and visual exploration. Community edition is free but single-instance; Aura/Enterprise cost real money. Keep it if Graph RAG is a goal; otherwise Postgres tables are enough.
+4. **Docker Compose is dev only.** Production: AKS/Container Apps or EKS/ECS, managed Postgres, secrets in Key Vault / Secrets Manager (`secrets_backend: cloud`), private networking.
+
+**Where the money actually goes (qualitative; no prices quoted)**
+- **Databricks compute and data movement** dominate: initial loads, CDC, validation queries. Levers: serverless/job compute with autoscale and auto-terminate, right-sized parallel partitions, avoid copying data twice, validate by hash/aggregates before row-level diffs, run validation off-peak.
+- **LLM tokens** (from M2): route by complexity bucket (small model for Simple, stronger model + critic for Complex), cache by `source_hash`, send only the narrow context, use batch endpoints for non-urgent work, cap retries and per-run budgets.
+- **Platform infra** (small Postgres, a few containers, object storage) is minor by comparison.
+- **Tool choice affects cost:** DMS vs ADF vs Debezium vs Databricks-native ingestion/federation have different per-hour/per-DIU/per-DBU cost profiles and CDC coverage. Evaluate with your table sizes and change rates before committing (open decision in §8).
+
+**Scaling path:** stateless API → queue → N workers (deterministic workers and LLM workers scaled separately) → state in Postgres + object storage → optional Neo4j. Each step is additive; the agent code and contracts do not change.
 
 ---
 
